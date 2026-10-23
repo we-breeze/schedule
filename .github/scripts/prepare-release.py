@@ -52,7 +52,7 @@ def main():
         git("config", "user.name", "github-actions[bot]")
         git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
         git("add", *(str(path) for path in MANIFESTS), "Cargo.lock")
-        git("commit", "-m", f"chore: release {tag}")
+        git("commit", "--allow-empty", "-m", f"chore: release {tag}")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"tag={tag}\n")
 
