@@ -52,6 +52,8 @@ real instant after the gap. UTC occurrence timestamps are durable identities.
 `CatchUp` replays a bounded number of oldest ticks. `OverlapPolicy::Skip` refuses
 to enqueue a second nonterminal occurrence. Cursor advancement and occurrence
 enqueue are atomic, so full queues leave the cursor available for later recovery.
+`Scheduler::run_until` waits its poll interval when capacity is full and resumes
+after workers drain the queue; `run_once` returns the capacity error to its caller.
 `Schedule.start_deadline_after_ms` gives every occurrence a deadline relative
 to its scheduled time; an absolute template deadline remains an upper bound.
 

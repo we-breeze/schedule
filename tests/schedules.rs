@@ -14,6 +14,83 @@ fn time(text: &str) -> i64 {
         .timestamp_millis()
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_running_scheduler_waits_for_capacity_and_resumes_the_same_tick() {
+    let provider = Arc::new(MemoryProvider::with_clock(1, Arc::new(now_ms)).unwrap());
+    let at = now_ms() - 1;
+    provider
+        .submit(Job::new("blocking", "kind", ()).unwrap())
+        .await
+        .unwrap();
+    let scheduler = Scheduler::new(
+        provider.clone(),
+        SchedulerOptions {
+            poll_interval: std::time::Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    scheduler
+        .register(
+            Schedule::new(
+                "capacity",
+                Trigger::Once,
+                Job::new("template", "kind", ()).unwrap(),
+                at,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(scheduler.run_once().await, Err(Error::Capacity)));
+    let before = provider.due_schedules(None, 1).await.unwrap().remove(0);
+    assert_eq!(before.revision, 0);
+    assert_eq!(before.next_run_at_ms, Some(at));
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        scheduler
+            .run_until(async {
+                let _ = stop_rx.await;
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !task.is_finished(),
+        "Capacity is backpressure for the running scheduler"
+    );
+    let claim = provider
+        .claim("worker", &["kind".into()], 1, 5000)
+        .await
+        .unwrap()
+        .remove(0);
+    provider
+        .finish(
+            &claim.record.job.id,
+            &claim.owner_token,
+            Completion::Success(serde_json::Value::Null),
+        )
+        .await
+        .unwrap();
+    let id = format!("schedule:capacity:{at}");
+    assert!(
+        provider.get(&id).await.unwrap().is_none(),
+        "The scheduler must wait its poll interval"
+    );
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    let record = provider
+        .get(&id)
+        .await
+        .unwrap()
+        .expect("The original occurrence is persisted after capacity drains");
+    assert_eq!(record.status, JobStatus::Queued);
+    assert_eq!(record.job.run_at_ms, at);
+    assert!(provider.due_schedules(None, 1).await.unwrap().is_empty());
+    stop_tx.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn each_occurrence_receives_its_own_start_deadline() {
     let provider = Arc::new(MemoryProvider::with_clock(16, Arc::new(|| 1000)).unwrap());

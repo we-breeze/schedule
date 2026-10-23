@@ -132,7 +132,14 @@ impl Scheduler {
     pub async fn run_until<F: Future<Output = ()> + Send>(&self, shutdown: F) -> Result<()> {
         tokio::pin!(shutdown);
         loop {
-            tokio::select! { biased; () = &mut shutdown => return Ok(()), result = self.run_once() => { result?; } }
+            tokio::select! {
+                biased;
+                () = &mut shutdown => return Ok(()),
+                result = self.run_once() => match result {
+                    Ok(_) | Err(Error::Capacity) => {},
+                    Err(error) => return Err(error),
+                }
+            }
             tokio::select! { () = &mut shutdown => return Ok(()), () = tokio::time::sleep(self.options.poll_interval) => {} }
         }
     }
