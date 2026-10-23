@@ -1,0 +1,59 @@
+name: Publish
+on:
+  workflow_dispatch:
+    inputs:
+      retry_tag:
+        description: Resume an existing unpublished or partially published semantic tag
+        required: false
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RETRY_TAG: ${{ inputs.retry_tag }}
+      BRZ_SCHEDULE_TEST_REDIS: 127.0.0.1:6379:0
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: --health-cmd="redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check publishing credential
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: test -n "$CARGO_REGISTRY_TOKEN" || { echo 'Configure accessible CARGO_REGISTRY_TOKEN first.'; exit 1; }
+      - name: Prepare version
+        id: release
+        run: python3 .github/scripts/prepare-release.py
+      - run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --locked --features test-support
+      - run: cargo test -p brz-schedule-redis --locked --features integration-tests
+      - run: cargo test --workspace --locked --release --features test-support
+      - run: cargo publish -p brz-schedule --locked --dry-run --registry crates-io
+      - name: Push checked release commit and tag atomically
+        if: inputs.retry_tag == ''
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push --atomic origin "HEAD:refs/heads/$DEFAULT_BRANCH" "refs/tags/$RELEASE_TAG"
+      - name: Publish core followed by adapter
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 .github/scripts/publish-packages.py
